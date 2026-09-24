@@ -1605,6 +1605,30 @@ const suggestFor = (qRaw, curCid) => {
 /* ---------- chat local engine ---------- */
 const spName = (sp) => SPX[sp].name.toLowerCase();
 const fmtWin = (ws) => ws.map(([a, b]) => `${a > 12 ? a - 12 : a}${a >= 12 ? "p" : "a"} to ${b > 12 ? b - 12 : b}${b >= 12 ? "p" : "a"}`).join(", ");
+const bestWin = (d) => {
+  if (!d || !d.windows || !d.windows.length) return null;
+  const sc = (w) => { let s2 = 0, n2 = 0; d.hourly.forEach((q) => { if (q.h >= w[0] && q.h <= w[1]) { s2 += q.score; n2++; } }); return n2 ? s2 / n2 : 0; };
+  return d.windows.reduce((a, b) => (sc(b) > sc(a) ? b : a));
+};
+const primeWindow = (spot, sp, date, dm, ctx, mode) => {
+  const w = bestWin(dm);
+  if (!w) return null;
+  const midT = new Date(date); midT.setHours(Math.round((w[0] + w[1]) / 2), 30, 0, 0);
+  const ts = ctx.events ? tideStateAt(ctx.events, midT) : null;
+  const why = [];
+  if (ts && ts.next) why.push((ts.rising ? "flood pushing toward the " + clock(ts.next.date) + " high" : "drop pulling toward the " + clock(ts.next.date) + " low"));
+  if (ctx.sun) {
+    const dR = Math.abs(midT - ctx.sun.rise) / 3600000, dS = Math.abs(midT - ctx.sun.set) / 3600000;
+    if (dR < 2) why.push("first light before the sun gets high");
+    else if (dS < 2) why.push("last light, the evening push");
+  }
+  const wd = ctx.windByHour[midT.getHours()];
+  const w2 = Math.round(wd != null ? wd : ctx.windClimo);
+  if (w2 <= 10) why.push(w2 + " mph, easy casting" + (mode === "wade" ? " on foot" : ""));
+  else if (w2 <= 16) why.push(w2 + " mph, manageable" + (mode === "wade" ? " if you keep it under 60 feet" : ""));
+  else why.push(w2 + " mph, work the lee");
+  return { w, why: why.join(", ") };
+};
 const DAYFULL = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"];
 const parseDay = (s, today) => {
   if (/\btoday\b|\btonight\b|this morning|this evening/.test(s)) return dayStart(today);
@@ -1869,7 +1893,7 @@ function App() {
     let best = null;
     c.species.forEach((k) => SPOTS.filter((s) => s.c === c.id && (s.sp[k] || 0) > 0).forEach((s) => {
       const d = computeDay(s, k, today, ctxFor(today, s));
-      if (!best || d.peak > best.peak) best = { spot: s, k, peak: d.peak };
+      if (!best || d.peak > best.peak) best = { spot: s, k, peak: d.peak, win: bestWin(d) };
     }));
     return { c, best };
   }), [tides, wx, sst, mode]);
@@ -1937,6 +1961,8 @@ function App() {
     );
   };
   const [copied, setCopied] = useState(false);
+  const [scrub, setScrub] = useState(null);
+  useEffect(() => { setScrub(null); }, [spot.id, sp, iso(date)]);
   const shareSpot = () => { try { navigator.clipboard.writeText(location.href); setCopied(true); setTimeout(() => setCopied(false), 1500); } catch (e) {} };
 
   /* 30-day board for selected spot */
@@ -2084,8 +2110,15 @@ function App() {
     const isToday = iso(date) === iso(today);
     const nowX = isToday && now >= t0 && now <= t1 ? x(now) : null;
     const nowTs = nowX != null ? tideStateAt(ctxToday.events, now) : null;
+    const onScrub = (e) => {
+      const rc = e.currentTarget.getBoundingClientRect();
+      setScrub(new Date(t0.getTime() + clamp((e.clientX - rc.left) / rc.width, 0, 1) * (t1 - t0)));
+    };
+    const scrubX = scrub && scrub >= t0 && scrub <= t1 ? x(scrub) : null;
+    const scrubTs = scrubX != null ? tideStateAt(ctxToday.events, scrub) : null;
     return (
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto" }}>
+      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: "auto", touchAction: "pan-y", cursor: "crosshair" }}
+        onPointerDown={onScrub} onPointerMove={(e) => { if (e.pointerType === "mouse" || e.buttons > 0) onScrub(e); }}>
         {hrs.map((h2) => { const t = new Date(date); t.setHours(h2, 0, 0, 0); const xx = x(t); return (
           <g key={h2}>
             <line x1={xx} x2={xx} y1={topPad - 4} y2={H - botPad + 4} stroke={C.line} strokeWidth="1" />
@@ -2111,6 +2144,12 @@ function App() {
           <g>
             <line x1={nowX} x2={nowX} y1={topPad - 4} y2={H - botPad + 4} stroke={C.bone} strokeWidth="1" strokeDasharray="3,3" opacity="0.8" />
             {nowTs && <circle cx={nowX} cy={y(nowTs.h)} r="4.5" fill={C.blaze} />}
+          </g>
+        )}
+        {scrubX != null && (
+          <g style={{ pointerEvents: "none" }}>
+            <line x1={scrubX} x2={scrubX} y1={topPad - 4} y2={H - botPad + 4} stroke={C.blaze} strokeWidth="1.5" />
+            {scrubTs && <circle cx={scrubX} cy={y(scrubTs.h)} r="4" fill={C.bone} stroke={C.ink} strokeWidth="1.5" />}
           </g>
         )}
       </svg>
@@ -2148,6 +2187,7 @@ function App() {
                   <div style={{ ...h, fontSize: 21 }}>{c.name.toUpperCase()}</div>
                   <div style={{ color: C.dim, fontSize: 12.5, marginTop: 2 }}>{c.species.map((k) => SPX[k].short).join(" · ")}</div>
                   {best && <div style={{ color: C.stone, fontSize: 13.5, marginTop: 7 }}>The call: <span style={{ color: C.bone, fontWeight: 600 }}>{best.spot.name}</span>, {best.spot.area}</div>}
+                  {best && best.win && <div style={{ fontFamily: F.mono, fontSize: 11, color: C.blaze, marginTop: 3 }}>BITE {fmtWin([best.win]).toUpperCase()}</div>}
                 </div>
                 {best && (
                   <div style={{ textAlign: "center", minWidth: 56 }}>
@@ -2195,6 +2235,7 @@ function App() {
                   <div>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{s.name}</div>
                     <div style={{ color: C.dim, fontSize: 12 }}>{s.area} · {Object.keys(s.sp).filter((k) => s.sp[k] > 0).map((k) => SPX[k].short).join(", ")}</div>
+                    {n && bestWin(n) && <div style={{ fontFamily: F.mono, fontSize: 10.5, color: C.blaze, marginTop: 3 }}>BITE {fmtWin([bestWin(n)]).toUpperCase()}</div>}
                   </div>
                   <div style={{ textAlign: "right", minWidth: 52 }}>
                     <div style={{ ...h, fontSize: 21, lineHeight: 1, color: n && n.peak >= 70 ? C.blaze : n && n.peak >= 50 ? C.stone : C.dim }}>{n ? to10(n.peak) : ""}<span style={{ fontSize: 11, color: C.dim }}>/10</span></div>
@@ -2287,7 +2328,7 @@ function App() {
           style={{ width: "100%", background: C.panel, color: C.bone, border: `1px solid ${C.line}`, borderRadius: 12, padding: "12px 12px", fontSize: 14.5, marginBottom: 12, fontFamily: F.body }}>
           {(() => { const RO = ["Maine","NH Seacoast","North Shore MA","Boston Harbor","South Shore MA","Cape Cod","Cape & Islands","South Coast MA","Rhode Island","Connecticut","Long Island NY","New Jersey","North Carolina","Nature Coast","Northeast FL","East Central FL","Southeast FL","Miami","Upper Keys","Middle Keys","Lower Keys","Everglades","Southwest FL","Tampa Bay","Abaco","Grand Bahama","Andros","Eleuthera","Exuma","Long Island"]; const ix = (r) => { const i = RO.indexOf(r); return i === -1 ? 999 : i; }; return [...new Set(spots.map((s) => s.reg))].sort((a, b) => ix(a) - ix(b)); })().map((rg) => (
             <optgroup key={rg} label={rg}>
-              {spots.filter((s) => s.reg === rg).map((s) => { const d = dmById(s.id); return <option key={s.id} value={s.id}>{s.name} · {d ? to10(d.peak) + "/10" : ""}</option>; })}
+              {spots.filter((s) => s.reg === rg).map((s) => { const d = dmById(s.id); const bw = d ? bestWin(d) : null; return <option key={s.id} value={s.id}>{s.name} · {d ? to10(d.peak) + "/10" : ""}{bw ? " · bite " + fmtWin([bw]) : ""}</option>; })}
             </optgroup>
           ))}
         </select>
@@ -2298,6 +2339,31 @@ function App() {
           <div style={card}>
             <div style={label}>Tide & sky</div>
             {svg || <div style={{ fontSize: 13.5, color: C.dim, lineHeight: 1.5 }}>{spot.station ? "Pulling tide predictions..." : CFG.WORLDTIDES_KEY ? "Pulling WorldTides for this flat..." : "No tide station covers this water. Scores here run on season, light, and weather, honestly labeled at lower confidence. Drop a WorldTides key in data/spots.js to light up exact times."}</div>}
+            {svg && !scrub && <div style={{ fontFamily: F.mono, fontSize: 10, color: C.dim, marginTop: 6 }}>Drag a finger across the chart to read tide, wind, and score hour by hour.</div>}
+            {svg && scrub && (() => {
+              const ts2 = tideStateAt(ctxToday.events, scrub);
+              const hh = scrub.getHours();
+              const wS = Math.round(ctxToday.windByHour[hh] != null ? ctxToday.windByHour[hh] : ctxToday.windClimo);
+              const hr2 = dm.hourly.find((q) => q.h === clamp(hh, 5, 22));
+              return (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginTop: 8, fontFamily: F.mono, fontSize: 12, color: C.stone, background: C.tile, border: `1px solid ${C.line}`, borderRadius: 8, padding: "7px 10px" }}>
+                  <span style={{ color: C.bone, fontWeight: 700 }}>{clock(scrub)}</span>
+                  <span>{ts2 ? ts2.h.toFixed(1) + " ft " + (ts2.rising ? "flooding" : "dropping") : "no tide feed"}</span>
+                  <span>{wS} mph</span>
+                  <span style={{ color: hr2 && hr2.score >= 70 ? C.blaze : C.stone, fontWeight: 700 }}>{hr2 ? to10(hr2.score) + "/10" : ""}</span>
+                </div>
+              );
+            })()}
+            {svg && (() => {
+              const pw = primeWindow(spot, sp, date, dm, ctxToday, mode);
+              if (!pw) return <div style={{ marginTop: 10, fontFamily: F.mono, fontSize: 11.5, color: C.dim, lineHeight: 1.5 }}>No window over 5/10 today. It stays below the bar all day here, check the 30-day board for a better one.</div>;
+              return (
+                <div style={{ marginTop: 10, background: C.blazeSoft, border: `1px solid ${C.blaze}55`, borderRadius: 10, padding: "10px 12px" }}>
+                  <div style={{ fontFamily: F.mono, fontSize: 10, letterSpacing: 1.2, color: C.blaze }}>PRIME WINDOW · {fmtWin([pw.w]).toUpperCase()}</div>
+                  <div style={{ fontSize: 13.5, color: C.stone, marginTop: 4, lineHeight: 1.5 }}>Why: {pw.why}.</div>
+                </div>
+              );
+            })()}
             {ctxToday.events && (() => {
               const t0 = new Date(date); t0.setHours(0, 0, 0, 0); const t1 = new Date(date); t1.setHours(23, 59, 0, 0);
               const evs2 = ctxToday.events.filter((e) => e.date >= t0 && e.date <= t1);
