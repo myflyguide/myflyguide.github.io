@@ -18,6 +18,14 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <script src="data/spots.js"></script>
+<script>if (typeof SPOTS === "undefined") document.write('<script src="spots.js"><\/script>');</script>
+<script>
+window.addEventListener("DOMContentLoaded", function () {
+  if (typeof SPOTS === "undefined") {
+    document.body.innerHTML = '<div style="color:#EAE5D8;background:#14181A;font-family:monospace;padding:40px;font-size:15px;line-height:1.7;min-height:100vh">FLYGUIDE: data file not found.<br/><br/>index.html loaded, but spots.js is missing from this repo. It was checked at data/spots.js and at the repo root.<br/><br/>Fix: open the repo on GitHub and confirm spots.js exists. If it lives somewhere else, move it to the root. Then hard refresh this page.</div>';
+  }
+});
+</script>
 <style>
   html, body { margin: 0; padding: 0; background: #14181A; overflow-x: hidden; max-width: 100vw; }
   #root { overflow-x: clip; }
